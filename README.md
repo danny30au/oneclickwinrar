@@ -2,7 +2,7 @@
 > ### RARLAB® Latest Release
 > **WinRAR 7.22**
 >
-> Use [`installrar_722`](#install-only-pattern-supported-by-installrarcmd-oneclickrarcmd) to udpate the software. 🚀
+> Use [`installrar_722`](#install-only-pattern-supported-by-installrarcmd-oneclickrarcmd) to update the software. 🚀
 >
 > <details>
 > <summary>View changes</summary>
