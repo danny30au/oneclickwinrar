@@ -1,0 +1,176 @@
+name:  Update and Release
+
+on:
+  schedule:
+    # Runs at 00:00 every day
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get latest WinRAR version and update files
+        id: update_version
+        shell: pwsh
+        run: |
+          $server1_host = 'www.rarlab.com'
+          $server1 = 'https://www.rarlab.com/rar'
+          $server2 = @('https://win-rar.com/fileadmin/winrar-versions/winrar', 'https://win-rar.com/fileadmin/winrar-versions/rarlab')
+
+          . ./src/includes/common/Logging.ps1
+          . ./src/includes/core/updates.ps1
+
+          $latestVersion = Get-WinrarLatestVersion
+          if ($latestVersion -eq 0 -or $latestVersion -eq 2) {
+            Write-Output "No valid version found or update skipped."
+            exit 0
+          }
+
+          $currentVersionStr = Get-Content -Path VERSION -Raw
+          $currentVersionStr = $currentVersionStr.Trim()
+          $versionParts = $currentVersionStr -split '\.'
+
+          if ($versionParts[-1] -eq $latestVersion) {
+            Write-Info "Version is already up-to-date ($latestVersion)."
+            echo "HAS_CHANGES=false" >> $env:GITHUB_ENV
+            exit 0
+          }
+
+          Write-Info "New WinRAR version found: $latestVersion"
+
+          $versionParts[-2] = [int]$versionParts[-2] + 1
+          $versionParts[-1] = $latestVersion
+          $newVersionStr = $versionParts -join '.'
+
+          Write-Info "Updating VERSION file to $newVersionStr..."
+          Set-Content -Path VERSION -Value $newVersionStr
+
+          $currentDate = Get-Date -Format "yyyy/MM/dd"
+
+          Write-Info "Updating installrar.ps1..."
+          $installrarPath = "installrar.ps1"
+          $content = Get-Content -Path $installrarPath -Raw
+          $content = $content -replace "Last updated: \d{4}/\d{2}/\d{2}", "Last updated: $currentDate"
+          $content = $content -replace '\$KNOWN_VERSIONS\s*=\s*@\([^)]+\)', "`$KNOWN_VERSIONS = @($latestVersion)"
+          Set-Content -Path $installrarPath -Value $content -NoNewline
+
+          Write-Info "Updating oneclickrar.ps1..."
+          $oneclickrarPath = "oneclickrar.ps1"
+          $content = Get-Content -Path $oneclickrarPath -Raw
+          $content = $content -replace "Last updated: \d{4}/\d{2}/\d{2}", "Last updated: $currentDate"
+          $content = $content -replace '\$KNOWN_VERSIONS\s*=\s*@\([^)]+\)', "`$KNOWN_VERSIONS = @($latestVersion)"
+          Set-Content -Path $oneclickrarPath -Value $content -NoNewline
+
+          Write-Info "Updating winrar_version_list.ps1..."
+          $versionListPath = "src/includes/patches/winrar_version_list.ps1"
+          $content = Get-Content -Path $versionListPath -Raw
+          $content = $content -replace '\$script:KNOWN_VERSIONS = @\(', "`$script:KNOWN_VERSIONS = @($latestVersion, "
+          Set-Content -Path $versionListPath -Value $content -NoNewline
+
+          $oldVersionParts = $currentVersionStr -split '\.'
+          $oldWinrarVersion = $oldVersionParts[-1]
+          $oldFormattedWinrarVersion = "$($oldWinrarVersion.ToString().Substring(0,1)).$($oldWinrarVersion.ToString().Substring(1))"
+          $formattedWinrarVersion = "$($latestVersion.ToString().Substring(0,1)).$($latestVersion.ToString().Substring(1))"
+
+          Write-Info "Fetching and parsing WhatsNew.txt changelog from RARLAB..."
+          $whatsNewText = Invoke-RestMethod -Uri "https://www.rarlab.com/WhatsNew.txt" -UserAgent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+          $whatsNewLines = $whatsNewText -split '\r?\n'
+          if ($whatsNewLines.Length -gt 25) { $whatsNewLines = $whatsNewLines[0..24] }
+          $whatsNewFormatted = $whatsNewLines | ForEach-Object {
+              $line = $_.TrimEnd()
+              if ($line) { "> $line" } else { ">" }
+          }
+          $whatsNewFormatted = $whatsNewFormatted -join "`r`n"
+          $whatsNewBlock  = "> <details>`r`n> <summary>View changes</summary>`r`n>`r`n> ```````r`n"
+          $whatsNewBlock += $whatsNewFormatted
+          $whatsNewBlock += "`r`n>`r`n> [ ... ]`r`n>`r`n> ----------------------------------------------`r`n> Read more: https://www.rarlab.com/WhatsNew.txt`r`n> ```````r`n> </details>"
+
+          Write-Info "Updating README.md with new version and changes for WinRAR v$formattedWinrarVersion.."
+          $readmeMd = Get-Content -Path README.md -Raw
+          $readmeMd = $readmeMd -replace "\*\*WinRAR $oldFormattedWinrarVersion\*\*", "**WinRAR $formattedWinrarVersion**"
+          $readmeMd = $readmeMd -replace "installrar_$oldWinrarVersion", "installrar_$latestVersion"
+          $readmeMd = $readmeMd -replace '(?s)> <details>\r?\n> <summary>View changes</summary>.*?> </details>', $whatsNewBlock
+          Set-Content -Path README.md -Value $readmeMd -NoNewline
+
+          Write-Info "Updating CHANGELOG..."
+          $changelogEntry = "`r`n`r`n$newVersionStr`r`n`r`n  - Update the known versions list with WinRAR $formattedWinrarVersion."
+          $changelog = Get-Content -Path CHANGELOG -Raw
+          $changelog = $changelog -replace "^CHANGELOG", "CHANGELOG$changelogEntry"
+          Set-Content -Path CHANGELOG -Value $changelog -NoNewline
+
+          Write-Info "Updating README.txt..."
+          $readmeTxt = Get-Content -Path README.txt -Raw
+          $readmeTxt = $readmeTxt -replace "v$currentVersionStr", "v$newVersionStr"
+          $readmeTxt = $readmeTxt -replace "CHANGELOG(\r?\n)---------", "CHANGELOG`$1---------$changelogEntry"
+          Set-Content -Path README.txt -Value $readmeTxt -NoNewline
+
+          $baseVersionStr = $versionParts[0..($versionParts.Length - 2)] -join '.'
+
+          Write-Info "Exporting variables for GitHub Release..."
+          echo "HAS_CHANGES=true" >> $env:GITHUB_ENV
+          echo "OLD_VERSION=$currentVersionStr" >> $env:GITHUB_ENV
+          echo "NEW_VERSION=$newVersionStr" >> $env:GITHUB_ENV
+          echo "BASE_VERSION=$baseVersionStr" >> $env:GITHUB_ENV
+          echo "WINRAR_VERSION=$latestVersion" >> $env:GITHUB_ENV
+          echo "WINRAR_VERSION_FORMATTED=$formattedWinrarVersion" >> $env:GITHUB_ENV
+
+          Write-Info "Update complete."
+
+      - name: Run build and release scripts
+        if: env.HAS_CHANGES == 'true'
+        run: |
+          chmod +x build.sh release.sh
+          ./build.sh
+          ./release.sh
+
+      - name: Commit, Tag, and Push changes
+        if: env.HAS_CHANGES == 'true'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add VERSION installrar.ps1 oneclickrar.ps1 src/includes/patches/winrar_version_list.ps1 README.md README.txt CHANGELOG
+
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: automated version update to ${{ env.WINRAR_VERSION_FORMATTED }} [skip ci]" -m "    ${{ env.OLD_VERSION }} -> ${{ env.NEW_VERSION }}"
+            git tag v${{ env.NEW_VERSION }}
+            git push origin HEAD
+            git push origin v${{ env.NEW_VERSION }}
+          else
+            echo "No changes to commit"
+          fi
+
+      - name: Create GitHub Release
+        if: env.HAS_CHANGES == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.NEW_VERSION }}
+          name: v${{ env.BASE_VERSION }}
+          body: |
+            Updated latest WinRAR version to ${{ env.WINRAR_VERSION_FORMATTED }}.
+
+            > [!NOTE]
+            > - All downloads in this release are linked below.
+            > - Download the [WinRAR ${{ env.WINRAR_VERSION_FORMATTED }} installer](https://www.win-rar.com/fileadmin/winrar-versions/winrar/winrar-x64-${{ env.WINRAR_VERSION }}.exe) directly if your internet is unstable or you are unable to download through the script.
+
+            ```
+            Show your love and give oneclickwinrar a star! 🌟
+            The night sky is big enough for both of us ❤️
+            ```
+
+            #### CHANGELOG [⧉](https://github.com/neuralpain/oneclickwinrar/blob/main/CHANGELOG)
+
+            ```
+            Have fun! 🚀 // 'cause why not?
+            ```
+          files: |
+            build/*
+            release/oneclickwinrar-${{ env.NEW_VERSION }}.zip
+          draft: true
+          prerelease: false
