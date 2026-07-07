@@ -45,6 +45,7 @@ zip -q $complete_release -r * || (echo "error: Failed to create archive." && ret
 
 cd ..
 
+mkdir -p ./release
 mv "./dist/$complete_release" "./release/$complete_release"
 
 [[ -f "./release/$complete_release" ]] && echo "Release archived successfully."
