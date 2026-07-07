@@ -172,5 +172,5 @@ jobs:
           files: |
             build/*
             release/oneclickwinrar-${{ env.NEW_VERSION }}.zip
-          draft: true
+          draft: false
           prerelease: false
